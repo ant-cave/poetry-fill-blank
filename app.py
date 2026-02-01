@@ -6,7 +6,11 @@ import os
 import requests
 import json
 
-def api_single(value:list[dict[str, str]]):
+def api_single(value:list[dict[str, str]], stream_callback=None):
+    """
+    调用 DeepSeek API，支持流式传输
+    stream_callback: 回调函数，每收到一块数据就调用一次，参数是 chunk_text
+    """
     # 1. 从环境变量获取 API Key
     api_key = os.getenv("DEEPSEEK_API_KEY")
     if not api_key:
@@ -23,25 +27,49 @@ def api_single(value:list[dict[str, str]]):
     }
 
     data = {
-        "model": "deepseek-chat",  # 或 deepseek-coder 等，根据你拥有的权限选择
+        "model": "deepseek-chat",
         "messages": [
             item for item in value
         ],
-        "max_tokens": 100,
-        "temperature": 1
+        "temperature": 0,
+        "stream": True,  # 开启流式传输,response_format={
+        'type': 'json_object'
     }
 
     try:
-        # 4. 发送 POST 请求
-        response = requests.post(url, headers=headers, json=data, timeout=30)
+        # 4. 发送 POST 请求（流式）
+        response = requests.post(url, headers=headers, json=data, timeout=60, stream=True)
         
         if response.status_code == 200:
-            result = response.json()
-            message = result['choices'][0]['message']['content']
-            print(message)
+            full_message = ""
+            # 逐行读取流式响应
+            for line in response.iter_lines():
+                if line:
+                    line_text = line.decode('utf-8')
+                    # SSE 格式以 "data: " 开头
+                    if line_text.startswith('data: '):
+                        json_str = line_text[6:]  # 去掉 "data: " 前缀
+                        if json_str == '[DONE]':
+                            break
+                        try:
+                            chunk = json.loads(json_str)
+                            # 提取 delta 中的 content
+                            delta = chunk.get('choices', [{}])[0].get('delta', {})
+                            content = delta.get('content', '')
+                            if content:
+                                full_message += content
+                                # 实时打印
+                                print(content, end='', flush=True)
+                                # 如果有回调函数，也调用一下
+                                if stream_callback:
+                                    stream_callback(content)
+                        except json.JSONDecodeError:
+                            continue
+            print()  # 最后换行
             print("="*50)
-            return message.strip()
+            return full_message.strip()
         else:
+            print(f"❌ 请求失败，状态码: {response.status_code}")
             return None
 
     except requests.exceptions.RequestException as e:
