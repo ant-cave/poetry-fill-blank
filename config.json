@@ -1,0 +1,14 @@
+{
+    "api": {
+        "url": "https://api.deepseek.com/v1/chat/completions",
+        "token": "",
+        "model": "deepseek-chat"
+    },
+    "output": {
+        "show_ai_response": false
+    },
+    "paths": {
+        "data_dir": "./data",
+        "output_dir": "./output"
+    }
+}

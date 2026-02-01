@@ -1,28 +1,91 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+添加原始诗词数据到参考库
+"""
+
 import json
-import app
+import sys
+import os
 
-with open("./data/reference-original.json", "r", encoding="utf-8") as f:
-    raw = json.loads(f.read())
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-with open('data/format_prompt.md', 'r', encoding='utf-8') as f:
-    prompt = f.read()
-texts=[]
-'''while 1:
-    text = input("请输入要填写的诗词: ")
-    if text=="":
-        break
-    texts.append(text)
+from lib.api import api_single
+from lib.config import load_config, ensure_dirs
 
-result=json.loads(app.api_single([{'role': 'system', 'content': prompt},{'role': 'user', 'content': "\n".join(texts)}]))
-'''
-with open('input.txt', 'r', encoding='utf-8') as f:
-    result=json.loads(app.api_single([{'role': 'system', 'content': prompt},{'role': 'user', 'content': f.read()}]))
-# 以读写模式打开文件，若文件为空则初始化为空列表，否则读取原有数据
-with open("./data/reference-original.json", "r+", encoding="utf-8") as f:
-    content = f.read().strip()
-    raw_text = json.loads(content) if content else []
-    raw_text.append(result)
-    # 将文件指针移到开头，清空原内容后写入更新后的数据
-    f.seek(0)
-    f.truncate()
-    f.write(json.dumps(raw_text, ensure_ascii=False, indent=2))
+
+def main():
+    config = load_config()
+    ensure_dirs(config)
+    
+    data_dir = config.get('paths', {}).get('data_dir', './data')
+    
+    # 加载参考数据
+    ref_file = os.path.join(data_dir, 'reference-original.json')
+    try:
+        with open(ref_file, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+    except FileNotFoundError:
+        raw = []
+        print(f"[!] 参考数据文件不存在，将创建新文件: {ref_file}")
+    except json.JSONDecodeError:
+        raw = []
+        print("[!] 参考数据文件格式错误，将重新创建")
+    
+    # 加载格式化提示词
+    prompt_file = os.path.join(data_dir, 'format_prompt.md')
+    try:
+        with open(prompt_file, 'r', encoding='utf-8') as f:
+            prompt = f.read()
+    except FileNotFoundError:
+        print(f"[!] 提示词文件不存在: {prompt_file}")
+        return
+    
+    # 从input.txt读取输入
+    input_file = 'input.txt'
+    if not os.path.exists(input_file):
+        print(f"[!] 输入文件不存在: {input_file}")
+        print("    请创建input.txt并写入要处理的诗词内容")
+        return
+    
+    with open(input_file, 'r', encoding='utf-8') as f:
+        content = f.read()
+    
+    if not content.strip():
+        print("[!] 输入文件为空")
+        return
+    
+    print("[*] 正在处理诗词数据...")
+    result_str = api_single([
+        {'role': 'system', 'content': prompt},
+        {'role': 'user', 'content': content}
+    ])
+    
+    if result_str is None:
+        print("[!] API调用失败")
+        return
+    
+    try:
+        result = json.loads(result_str)
+    except json.JSONDecodeError as e:
+        print(f"[!] JSON解析失败: {e}")
+        print("[!] 尝试修复...")
+        # 尝试修复markdown代码块
+        if "```json" in result_str:
+            result_str = result_str.split("```json")[1].split("```")[0].strip()
+        elif "```" in result_str:
+            result_str = result_str.split("```")[1].split("```")[0].strip()
+        result = json.loads(result_str)
+    
+    # 追加到参考数据
+    raw.append(result)
+    
+    # 保存
+    with open(ref_file, "w", encoding="utf-8") as f:
+        json.dump(raw, f, ensure_ascii=False, indent=2)
+    
+    print(f"[+] 数据已添加到: {ref_file}")
+
+
+if __name__ == "__main__":
+    main()

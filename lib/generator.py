@@ -1,0 +1,178 @@
+import json
+import os
+from .api import api_single
+from .config import load_config
+from rich.console import Console
+from rich.panel import Panel
+
+console = Console()
+
+
+def load_reference_data(config):
+    """加载参考数据"""
+    data_dir = config.get('paths', {}).get('data_dir', './data')
+    ref_file = os.path.join(data_dir, 'reference-original.json')
+    
+    if not os.path.exists(ref_file):
+        console.print(f"[yellow]⚠ 参考数据文件不存在: {ref_file}[/yellow]")
+        return []
+    
+    try:
+        with open(ref_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            console.print(f"[dim]已加载 {len(data)} 条参考数据[/dim]")
+            return data
+    except Exception as e:
+        console.print(f"[red]✗ 读取参考数据失败: {e}[/red]")
+        return []
+
+
+def generate_questions(poet: str, poem: str, num: int, difficulty: str = "0.9"):
+    """
+    生成诗词默写题目 题目必须是完整的一小句（以逗号或句号断） 禁止一字空或者短语空
+    """
+    config = load_config()
+    reference_data = load_reference_data(config)
+    
+    # 系统提示词 - 格式细则
+    format_prompt = """格式细则：
+    **【核心要求】**  
+输出必须是纯净的JSON数组，没有任何额外文本、说明或标记。直接以`[`开始，以`]`结束。
+
+**【处理流程】**
+
+**第1步：解析题目与答案对应关系**  
+1. 识别输入文本中的每个独立诗篇（如《蜀相》理解性默写）  
+2. 在每个诗篇中识别所有编号题目（如`1．`、`2．`）  
+3. 定位文本末尾的答案集中区域，按诗篇标题找到每道题的对应答案
+
+**第2步：处理单道题目（严格按顺序执行）**  
+
+**A. 提取答案并正确拆分**  
+1. 从答案集中找到当前题目的答案原文  
+2. **强制按诗词真实断句拆分**：  
+   - 先按标点拆分：逗号（，）、句号（。）、问号（？）、感叹号（！）、分号（；）  
+   - **重要**：拆分后必须验证每个片段是否为合法的诗句断句  
+   - 示例：  
+     - 错误：`["酌酒以自宽举杯断绝歌路难"]`（未拆分）  
+     - 正确：`["酌酒以自宽", "举杯断绝歌路难"]`（按逗号拆分）  
+3. 如果答案原文无标点但明显是多个诗句，按诗词常识拆分：  
+   - 五言诗：2+3断句（如"床前明月光"拆为"床前"、"明月光"）  
+   - 七言诗：4+3断句（如"两个黄鹂鸣翠柳"拆为"两个黄鹂鸣翠柳"、"一行白鹭上青天"）  
+   - 注意：每个片段应有独立完整的意思  
+4. 统计答案片段数量，记为`n`
+
+**B. 构建value字段（关键步骤）**  
+1. 移除题目前的编号（如`1．`）及后续空格  
+2. 识别题目原文中的所有填空标记：  
+   - 下划线`_`、全角下划线`＿`、连续下划线`____`  
+   - 括号提示如`（_）`、`（__,__）`等  
+3. **占位符数量必须等于答案片段数量`n`**：  
+   - 如果题目原文中填空标记数量等于`n`：直接替换为`{{answer}}`  
+   - 如果填空标记数量少于`n`：在适当位置添加`{{answer}}`  
+     * 通常在诗句自然断句处添加  
+     * 保持句子通顺  
+   - 如果填空标记数量多于`n`：合并多余的标记  
+   - 若答案只有一句，value中也应当**只有1处{{answer}}**
+4. **标点位置处理**：  
+   - 答案片段间的标点（逗号、问号等）必须保留在`value`的`{{answer}}`之间  
+   - 示例：  
+     - 正确：`"{{answer}}，{{answer}}"`（两个占位符中间有逗号）  
+     - 错误：`"{{answer}}"`（当`n=2`时）
+
+**C. 字段提取**  
+1. `title`：从《诗名》中提取，去除书名号  
+2. `poet`：从"诗人《诗名》"格式中提取诗人，如未明确则补充常识  
+3. `answer`：确保每个片段：  
+   - 不包含任何标点  
+   - 是独立的诗句片段  
+   - 顺序与题目填空顺序一致
+
+**第3步：强制验证**  
+处理完每道题后必须检查：  
+1. `answer`数组长度 = `value`中`{{answer}}`的数量  
+2. 将`answer`片段依次代入`{{answer}}`，句子必须完整通顺  
+3. `answer`中无任何标点符号  
+4. 诗词断句符合常识（如不是生硬的2+2拆分五言诗）
+**JSON返回必须最小化 去掉不必要的格式空格 节约token**"""
+
+    # 难度说明
+    difficulty_prompt = """难度评判参考：1级（低难度/基础记忆）：
+
+考查点：直接考查最著名、最核心的名句、主旨句。题干描述与诗句字面意思高度重合。
+
+答案特征：通常是全篇的"诗眼"或千古名句，学生耳熟能详。
+
+示例题干："《岳阳楼记》中表达作者远大政治抱负的句子是'{{answer}}，{{answer}}。'"（答案：先天下之忧而忧，后天下之乐而乐）
+
+难度构成示例："考查核心主旨句，记忆强度高，理解要求低。"
+
+2级（中难度/标准理解）：
+
+考查点：考查对特定场景、手法或情感的理解。题干需要对诗句进行适度的概括、转述或术语化。
+
+答案特征：是文中的关键句，但未必是首推的那一两句。需要联系上下文才能准确锁定。
+
+示例题干："《琵琶行》中通过听众的寂静反应侧面烘托琵琶女演奏技艺高超的句子是'{{answer}}，{{answer}}。'"（答案：东船西舫悄无言，唯见江心秋月白）
+
+难度构成示例："考查特定艺术手法（侧面描写）下的句子，需在理解全文基础上进行定位。"
+
+3级（高难度/深度分析与综合）：
+
+考查点：考查对含蓄意象、复杂情感、深层逻辑或易混淆句的精准把握。题干描述高度抽象、概括，或设置微妙的辨析点。
+
+答案特征：可能是容易被忽略的句子，或与其它句子含义相近易混。需要对诗文有整体、深入的分析。
+
+示例题干："《赤壁赋》中，苏轼以'{{answer}}，{{answer}}'两句，形象地揭示了'变'与'不变'的哲学思考，体现了辩证观点。"（答案：盖将自其变者而观之，则天地曾不能以一瞬；自其不变者而观之，则物与我皆无尽也）
+
+难度构成示例："考查抽象哲学观点的具体对应句，句子较长，且文中另有表达相似情感的句子易造成干扰。"
+
+总体要求：不论什么难度 都不应当直接提及答案中的原词"""
+
+    messages = [
+        {"role": "system", "content": "学习诗文出题数据 返回符合数据格式的json字符串"},
+        {"role": "system", "content": format_prompt},
+        {"role": "system", "content": "数据：" + json.dumps(reference_data, ensure_ascii=False)},
+        {"role": "system", "content": difficulty_prompt},
+        {"role": "user", "content": f"生成:`{poet}`的`《{poem}》`的理解性默写 包含{num}道题目 难度为(最难为1){difficulty}"},
+    ]
+
+    result = api_single(messages, temp=0.7)
+    
+    if result is None:
+        return None
+    
+    try:
+        # 解析返回的JSON
+        parsed = json.loads(result)
+        return parsed
+    except json.JSONDecodeError as e:
+        console.print(f"[red]✗ AI返回的数据不是有效JSON: {e}[/red]")
+        console.print("[dim]原始返回内容已保存到日志[/dim]")
+        # 尝试修复常见的JSON问题
+        try:
+            # 有时候AI会返回markdown代码块
+            if "```json" in result:
+                result = result.split("```json")[1].split("```")[0].strip()
+            elif "```" in result:
+                result = result.split("```")[1].split("```")[0].strip()
+            parsed = json.loads(result)
+            console.print("[green]✓[/green] 成功修复并解析JSON")
+            return parsed
+        except:
+            return None
+
+
+def save_generated_data(data, config):
+    """保存生成的数据到文件"""
+    data_dir = config.get('paths', {}).get('data_dir', './data')
+    output_file = os.path.join(data_dir, 'generated.json')
+    
+    try:
+        with open(output_file, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=4)
+        console.print(f"[green]✓[/green] 数据已保存: [dim]{output_file}[/dim]")
+        return True
+    except Exception as e:
+        console.print(f"[red]✗ 保存数据失败: {e}[/red]")
+        return False
