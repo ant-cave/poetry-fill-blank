@@ -1,12 +1,11 @@
 import requests as req
 
-from rich import print
 
 import os
 import requests
 import json
 
-def api_single(value:list[dict[str, str]], stream_callback=None):
+def api_single(value:list[dict[str, str]], stream_callback=None,temp=0.2):
     """
     调用 DeepSeek API，支持流式传输
     stream_callback: 回调函数，每收到一块数据就调用一次，参数是 chunk_text
@@ -31,7 +30,7 @@ def api_single(value:list[dict[str, str]], stream_callback=None):
         "messages": [
             item for item in value
         ],
-        "temperature": 0,
+        "temperature": temp,
         "stream": True,  # 开启流式传输,response_format={
         'type': 'json_object'
     }
